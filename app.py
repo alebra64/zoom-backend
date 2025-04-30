@@ -1,7 +1,10 @@
-import os
-import requests
-from flask import Flask, request, jsonify
+from flask import Flask, jsonify, request
 from flask_cors import CORS
+import requests
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
 
 app = Flask(__name__)
 CORS(app)
@@ -9,18 +12,21 @@ CORS(app)
 CLIENT_ID = os.getenv("ZOOM_CLIENT_ID")
 CLIENT_SECRET = os.getenv("ZOOM_CLIENT_SECRET")
 ACCOUNT_ID = os.getenv("ZOOM_ACCOUNT_ID")
+
 TOKEN_URL = "https://zoom.us/oauth/token"
-REGISTRANTS_URL = "https://api.zoom.us/v2/webinars/{webinar_id}/registrants"
+REGISTRANTS_URL_TEMPLATE = "https://api.zoom.us/v2/webinars/{}/registrants?page_size=100&page_number={}"
 
 def get_access_token():
     try:
         response = requests.post(
             TOKEN_URL,
-            params={"grant_type": "account_credentials", "account_id": ACCOUNT_ID},
-            auth=(CLIENT_ID, CLIENT_SECRET)
+            headers={
+                "Authorization": f"Basic {requests.auth._basic_auth_str(CLIENT_ID, CLIENT_SECRET)}"
+            },
+            data={"grant_type": "account_credentials", "account_id": ACCOUNT_ID},
         )
         response.raise_for_status()
-        return response.json().get("access_token")
+        return response.json()["access_token"]
     except Exception as e:
         return None
 
@@ -28,46 +34,42 @@ def get_access_token():
 def get_registrants():
     webinar_id = request.args.get("id")
     if not webinar_id:
-        return jsonify({"error": "ID del webinar mancante."}), 400
+        return jsonify({"error": "ID del webinar mancante"}), 400
 
-    token = get_access_token()
-    if not token:
-        return jsonify({"error": "Access token non ottenuto"}), 500
+    access_token = get_access_token()
+    if not access_token:
+        return jsonify({"error": "Access token non ottenuto"}), 400
 
-    headers = {"Authorization": f"Bearer {token}"}
     registrants = []
-    next_page_token = ""
-
+    page = 1
     while True:
-        params = {"page_size": 30}
-        if next_page_token:
-            params["next_page_token"] = next_page_token
-
-        response = requests.get(
-            REGISTRANTS_URL.format(webinar_id=webinar_id),
-            headers=headers,
-            params=params
-        )
-
-        if response.status_code != 200:
-            return jsonify({"error": "Errore durante la richiesta Zoom", "status": response.status_code}), 500
-
-        data = response.json()
-        registrants.extend([
-            {
-                "email": r.get("email"),
-                "first_name": r.get("first_name"),
-                "last_name": r.get("last_name"),
-                "join_url": r.get("join_url")
-            } for r in data.get("registrants", [])
-        ])
-
-        next_page_token = data.get("next_page_token", "")
-        if not next_page_token:
+        url = REGISTRANTS_URL_TEMPLATE.format(webinar_id, page)
+        res = requests.get(url, headers={"Authorization": f"Bearer {access_token}"})
+        if res.status_code != 200:
+            return jsonify({
+                "error": "Errore nel recupero iscritti Zoom",
+                "status": res.status_code,
+                "zoom_response": res.text
+            }), res.status_code
+        data = res.json()
+        registrants += data.get("registrants", [])
+        if not data.get("next_page_token"):
             break
+        page += 1
 
-    return jsonify(registrants)
+    cleaned = [
+        {
+            "first_name": r.get("first_name", ""),
+            "last_name": r.get("last_name", ""),
+            "email": r.get("email", ""),
+            "join_url": r.get("join_url", "")
+        } for r in registrants
+    ]
+    return jsonify(cleaned)
 
 @app.route("/")
 def home():
-    return jsonify({"message": "✅ Backend Zoom operativo. Usa /api/registrants?id=IDWEBINAR"})
+    return jsonify({"message": "✅ Backend operativo. Usa /api/registrants?id=IDWEBINAR"})
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=10000)
