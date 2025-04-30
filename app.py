@@ -1,75 +1,81 @@
-import os
-import requests
 from flask import Flask, jsonify, request
 from flask_cors import CORS
-from dotenv import load_dotenv
-
-# Carica le variabili da environment se presenti
-load_dotenv()
+import os
+import requests
 
 app = Flask(__name__)
 CORS(app)
 
-@app.route('/')
-def home():
-    return jsonify({"message": "✅ Backend Zoom operativo. Usa /api/registrants?id=IDWEBINAR"})
+# URL del token Zoom (per EU)
+TOKEN_URL = "https://zoom-eu.zoom.us/oauth/token"
 
-@app.route('/api/registrants')
-def get_registrants():
-    webinar_id = request.args.get('id')
-
-    if not webinar_id:
-        return jsonify({"error": "ID del webinar mancante"}), 400
-
-    account_id = os.getenv("ZOOM_ACCOUNT_ID")
+# Ottiene un token valido da Zoom
+def get_access_token():
     client_id = os.getenv("ZOOM_CLIENT_ID")
     client_secret = os.getenv("ZOOM_CLIENT_SECRET")
+    account_id = os.getenv("ZOOM_ACCOUNT_ID")
 
-    if not all([account_id, client_id, client_secret]):
-        return jsonify({"error": "Variabili di ambiente mancanti"}), 500
+    if not all([client_id, client_secret, account_id]):
+        return None, {"error": "Variabili ambiente mancanti"}
 
-    # Ottieni access token
-    token_url = "https://zoom.us/oauth/token"
-    headers = {
-        "Authorization": f"Basic {requests.auth._basic_auth_str(client_id, client_secret)}"
-    }
+    headers = {"Content-Type": "application/x-www-form-urlencoded"}
+    auth = (client_id, client_secret)
     data = {
         "grant_type": "account_credentials",
         "account_id": account_id
     }
 
     try:
-        token_response = requests.post(token_url, headers=headers, data=data)
-        if token_response.status_code != 200:
-            return jsonify({"error": "Access token non ottenuto", "status": token_response.status_code, "zoom_response": token_response.text}), 500
+        response = requests.post(TOKEN_URL, headers=headers, data=data, auth=auth)
+        if response.status_code == 200:
+            return response.json()["access_token"], None
+        else:
+            return None, {
+                "error": "Access token non ottenuto",
+                "status": response.status_code,
+                "zoom_response": response.text
+            }
+    except Exception as e:
+        return None, {"error": str(e)}
 
-        access_token = token_response.json().get("access_token")
+# Route principale
+@app.route("/")
+def home():
+    return "✅ API di iscritti attiva. Usa /api/registrants?id=ID_WEBINAR"
 
-        # Ottieni gli iscritti al webinar
-        registrants_url = f"https://api.zoom.us/v2/webinars/{webinar_id}/registrants"
-        registrants_headers = {
-            "Authorization": f"Bearer {access_token}"
-        }
+# Endpoint per ottenere iscritti
+@app.route("/api/registrants")
+def get_registrants():
+    webinar_id = request.args.get("id")
+    if not webinar_id:
+        return jsonify({"error": "ID webinar mancante"}), 400
 
-        registrants_response = requests.get(registrants_url, headers=registrants_headers)
+    token, error = get_access_token()
+    if error:
+        return jsonify(error), 400
 
-        if registrants_response.status_code != 200:
-            return jsonify({"error": "Impossibile recuperare gli iscritti", "status": registrants_response.status_code, "zoom_response": registrants_response.text}), 500
+    url = f"https://api.zoom.us/v2/webinars/{webinar_id}/registrants"
+    headers = {"Authorization": f"Bearer {token}"}
+    try:
+        response = requests.get(url, headers=headers)
+        data = response.json()
 
-        registrants = registrants_response.json().get("registrants", [])
+        if response.status_code != 200:
+            return jsonify({"error": "Errore nel recupero iscritti", "zoom_response": data}), response.status_code
 
-        # Estraggo i dati richiesti
-        output = [{
-            "first_name": r["first_name"],
-            "last_name": r["last_name"],
-            "email": r["email"],
-            "join_url": r.get("join_url", "")
-        } for r in registrants]
-
-        return jsonify(output)
-
+        registrants = [
+            {
+                "first_name": r["first_name"],
+                "last_name": r["last_name"],
+                "email": r["email"],
+                "join_url": r.get("join_url", "Non disponibile")
+            }
+            for r in data.get("registrants", [])
+        ]
+        return jsonify(registrants)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+# Esecuzione del server
 if __name__ == "__main__":
-    app.run(host='0.0.0.0', port=10000)
+    app.run(host="0.0.0.0", port=10000)
