@@ -7,7 +7,8 @@ app = Flask(__name__)
 CORS(app)
 
 # URL del token Zoom (per EU)
-TOKEN_URL = "https://zoom-eu.zoom.us/oauth/token"
+token_url = "https://zoom.us/oauth/token"
+
 
 # Ottiene un token valido da Zoom
 def get_access_token():
